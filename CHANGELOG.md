@@ -7,6 +7,11 @@ breaking config changes; patch releases stay additive.
 
 ## [Unreleased]
 
+### Fixed
+- Preserve a protected read-only Windows `OWNER RIGHTS` ACL entry when validating
+  client v1 discovery paths, while continuing to refuse any such entry that can
+  write data, delete content, or rewrite ownership or permissions.
+
 ## [0.4.3] - 2026-09-12
 
 > Makes familiar conversations the native iOS app's home.
