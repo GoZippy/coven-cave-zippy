@@ -1035,7 +1035,7 @@ struct ChatView: View {
                           onReply: bubbleReply,
                           onRetryDelete: bubbleRetryDelete,
                           operatorName: app.operatorDisplayName,
-                          operatorAvatarURL: app.operatorAvatarURL,
+                          operatorAvatarSource: app.operatorAvatarSource,
                           onContentHeightChange: {
                               guard scrollState.isFollowingLatest else { return }
                               streamScroll.request { scrollToLatest(proxy) }
