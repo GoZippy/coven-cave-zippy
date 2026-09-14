@@ -175,6 +175,10 @@ export function createDeviceAccessGateway(options: {
     const direct = options.isDirectLoopback(req);
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     const isApi = pathname === API || pathname.startsWith(`${API}/`);
+    // Local app availability is independent of policy storage, but local
+    // pairing must still observe policy before issuing a legacy invite.
+    const isHandoff = pathname === "/api/mobile-handoff" || pathname.startsWith("/api/mobile-handoff/");
+    if (direct && !isApi && !isHandoff) return false;
     try {
       const policy = await currentPolicy();
       if (policy.enabled) req.headers[DEVICE_MANAGED_HEADER] = options.stampSecret;

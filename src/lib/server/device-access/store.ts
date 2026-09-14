@@ -24,6 +24,7 @@ const ERROR_STATUS = {
   conflict: 409,
   not_found: 404,
   rate_limited: 429,
+  unavailable: 503,
 } as const;
 
 export class DeviceAccessError extends Error {

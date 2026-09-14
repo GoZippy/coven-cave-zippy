@@ -462,7 +462,8 @@ var ERROR_STATUS = {
   forbidden: 403,
   conflict: 409,
   not_found: 404,
-  rate_limited: 429
+  rate_limited: 429,
+  unavailable: 503
 };
 var DeviceAccessError = class extends Error {
   constructor(code, message, status = ERROR_STATUS[code]) {
@@ -1974,6 +1975,8 @@ function createDeviceAccessGateway(options) {
     const direct = options.isDirectLoopback(req);
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     const isApi = pathname === API || pathname.startsWith(`${API}/`);
+    const isHandoff = pathname === "/api/mobile-handoff" || pathname.startsWith("/api/mobile-handoff/");
+    if (direct && !isApi && !isHandoff) return false;
     try {
       const policy = await currentPolicy();
       if (policy.enabled) req.headers[DEVICE_MANAGED_HEADER] = options.stampSecret;
@@ -2147,22 +2150,21 @@ function deferDeviceAccessStore(initialize, { warn = console.warn } = {}) {
     (error) => {
       failed = error instanceof Error ? error : new Error(String(error));
       warn(
-        `[device-access] unavailable \u2014 the server is running and device access is refused. Pairing, approvals and device credentials will not work until this is fixed: ${failed.message}`
+        `[device-access] unavailable \u2014 the server is running and device access is refused. Remote access, pairing, approvals and device credentials will not work until this is fixed: ${failed.message}`
       );
     }
   );
   const live = () => {
     if (ready) return ready;
     throw new DeviceAccessError(
-      "forbidden",
+      "unavailable",
       failed ? `Device access is unavailable on this host: ${failed.message}` : "Device access is unavailable on this host."
     );
   };
   const store = {
     async policy() {
       await settled;
-      if (!ready) return { enabled: false, allowedTailnets: [] };
-      return ready.policy();
+      return live().policy();
     },
     async snapshot() {
       await settled;
