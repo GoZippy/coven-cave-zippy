@@ -185,26 +185,44 @@ test("stopCave treats a child with a signalCode as already exited", async () => 
 });
 
 test("stopCave subscribes before terminating a live child and does not force-kill its signal exit", async () => {
-  const child = new EventEmitter();
-  child.exitCode = null;
-  child.signalCode = null;
-  child.pid = 123;
-  const events = [];
-  const originalOnce = child.once;
-  child.once = function (event, listener) {
-    if (event === "exit") events.push("subscribe");
-    return originalOnce.call(this, event, listener);
-  };
-  child.kill = (signal) => {
-    events.push(signal);
-    child.signalCode = signal;
-    queueMicrotask(() => child.emit("exit", null, signal));
-    return true;
-  };
-
-  await stopCave({ child }, 1);
-
-  assert.deepEqual(events, ["subscribe", "SIGTERM"]);
+  const source = await readFile(new URL("./client-v1-conformance.mjs", import.meta.url), "utf8");
+  const stopSource = /export async function stopCave\(server, port\) \{[\s\S]*?\n\}/u.exec(source);
+  assert.ok(stopSource);
+  for (const platform of ["linux", "win32"]) {
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.signalCode = null;
+    child.pid = 123;
+    const events = [];
+    const originalOnce = child.once;
+    child.once = function (event, listener) {
+      if (event === "exit") events.push("subscribe");
+      return originalOnce.call(this, event, listener);
+    };
+    child.kill = (signal) => {
+      events.push(signal);
+      child.signalCode = signal;
+      queueMicrotask(() => child.emit("exit", null, signal));
+      return true;
+    };
+    // A simulated PID must never reach the host's real taskkill.
+    const stop = runInNewContext(`(${stopSource[0].replace(/^export /u, "")})`, {
+      process: { platform },
+      once, setTimeout, clearTimeout,
+      spawn: (command, args, options) => {
+        assert.equal(platform, "win32");
+        assert.equal(command, "taskkill");
+        assert.equal(JSON.stringify(args), JSON.stringify(["/pid", "123", "/T", "/F"]));
+        assert.equal(options.stdio, "ignore");
+        events.push("taskkill");
+        child.exitCode = 1;
+        queueMicrotask(() => child.emit("exit", 1, null));
+      },
+      requestOnce: async () => { throw new Error("control listener is stopped"); },
+    });
+    await stop({ child }, 1);
+    assert.deepEqual(events, ["subscribe", platform === "win32" ? "taskkill" : "SIGTERM"]);
+  }
 });
 
 test("tokenless loopback admin probes follow the reviewed development contract", () => {

@@ -318,15 +318,22 @@ The existing `scripts/client-v1-conformance.test.mjs` suite also exercises the
 actual `startCave` function body with fixture executables, real Node child
 processes/pipes, the production environment builder, HTTP polling, and
 `stopCave`. These zero/nonzero/missing-module controls do not boot packaged
-Cave or reproduce the protected Windows user's environment. They are already
-included by `pnpm test:conformance` in the `runtime` Windows matrix of
-`.github/workflows/full-validation.yml` (and the corresponding release runtime
-lane). That matrix subsequently builds and tests the packaged sidecar; the
-separate `windows-native` job tests Rust/PowerShell behavior instead. Full
-validation is a reusable `workflow_call` workflow, so running unpublished
-changes there requires a reviewed source commit and an authorized caller.
-Neither a local control pass nor a Windows parser/control pass is evidence
-for the cause of a historical protected-server exit.
+Cave or reproduce the protected Windows user's environment. The file belongs
+to the app test suite, not `pnpm test:conformance`. Ordinary `.github/workflows/ci.yml`
+therefore runs it explicitly in `Frontend validation (Windows startup controls)`
+on `windows-latest`, under the existing frontend path selection and recovery
+SHA guards. The job has read-only contents permission, no protected environment,
+and a 20-minute bound. Its selected result must succeed for `Frontend build`;
+the existing exact-head/current-attempt evidence guard also covers it.
+
+This premerge job is distinct from the `runtime` Windows matrix in
+`.github/workflows/full-validation.yml`, which runs cross-environment suites
+and builds/tests the packaged sidecar, and from `windows-native`, which tests
+Rust/PowerShell behavior. Full validation remains a reusable `workflow_call`
+workflow gated by its normal release-candidate provenance; the diagnostic job
+does not change or bypass it. Neither a local control pass nor a Windows
+parser/control pass is evidence for the cause of a historical protected-server
+exit.
 
 ## Findings a green run still reports
 
