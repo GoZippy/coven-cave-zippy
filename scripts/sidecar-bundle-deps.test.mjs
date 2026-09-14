@@ -36,10 +36,20 @@ assert.match(
   /--alias:yaml=\.\/node_modules\/yaml\/dist\/index\.js/,
   "server builds must bundle yaml instead of depending on platform-specific Next traces",
 );
+assert.match(
+  packageJson.scripts["build:server"],
+  /--banner:js="import \{ createRequire as __covenCreateRequire \} from 'node:module'; const require = __covenCreateRequire\(import\.meta\.url\);"/,
+  "the ESM server bundle must provide CommonJS require for yaml's Node entry",
+);
 assert.doesNotMatch(
   serverBundleSource,
   /(?:from\s+|import\s*\()["']yaml["']/,
   "the packaged server must not retain a bare yaml import",
+);
+assert.match(
+  serverBundleSource,
+  /^import \{ createRequire as __covenCreateRequire \} from 'node:module'; const require = __covenCreateRequire\(import\.meta\.url\);/,
+  "the committed server must initialize require before bundled CommonJS modules execute",
 );
 
 assert.match(
