@@ -240,9 +240,15 @@ $trusted = @($me.Value, $system.Value, $admins.Value)
 function Read-State {
   param($target)
   $acl = $target.GetAccessControl('Access,Owner')
-  $aces = @($acl.Access | ForEach-Object {
+  # Keep account-name lookup out of the security boundary: orphaned or remote
+  # principals can make IdentityReference.Translate block on Windows.
+  $aces = @($acl.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ) | ForEach-Object {
     [pscustomobject]@{
-      sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+      sid = $_.IdentityReference.Value
       type = [string]$_.AccessControlType
       rights = [uint32]$_.FileSystemRights
     }
@@ -283,7 +289,14 @@ if (-not (Test-Exclusive $state)) {
     $acl.SetOwner($me)
   }
   $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+  # Enumerate the explicit post-protection rules in the same SID-native form.
+  foreach ($rule in @($acl.GetAccessRules(
+    $true,
+    $false,
+    [System.Security.Principal.SecurityIdentifier]
+  ))) {
+    $acl.RemoveAccessRuleSpecific($rule)
+  }
   $inheritance = if ($item.PSIsContainer) { 'ContainerInherit, ObjectInherit' } else { 'None' }
   foreach ($sid in @($me, $system, $admins)) {
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(

@@ -957,3 +957,32 @@ test("the ACL probe is spawned without this process's environment", async () => 
     );
   }
 });
+
+test("the ACL probe reads access rules as SIDs without account translation", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+
+  for (const file of [
+    "src/lib/server/client-v1/path-ownership.ts",
+    "server.ts",
+  ]) {
+    const source = await readFile(resolve(process.cwd(), file), "utf8");
+    const script = /const WINDOWS_ACL_SCRIPT = `([\s\S]*?)`;/u.exec(source);
+    assert.ok(script, `${file} must define the Windows ACL probe`);
+    assert.match(
+      script![1],
+      /\$acl\.GetAccessRules\(\s*\$true,\s*\$true,\s*\[System\.Security\.Principal\.SecurityIdentifier\]\s*\)/u,
+      `${file} must request SID-backed rules directly`,
+    );
+    assert.doesNotMatch(
+      script![1],
+      /\.IdentityReference\.Translate\(/u,
+      `${file} must not perform blocking account-name translation`,
+    );
+    assert.doesNotMatch(
+      script![1],
+      /\$acl\.Access\b/u,
+      `${file} must not enumerate the account-translating Access property`,
+    );
+  }
+});
