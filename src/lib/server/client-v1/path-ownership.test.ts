@@ -1028,3 +1028,37 @@ test("the ACL probe reads access rules as SIDs without account translation", asy
     );
   }
 });
+
+test("the ACL probe invokes no PowerShell cmdlets at all", async () => {
+  // v0.4.2-rc.5 stalled on `Get-Item`; rc.6 moved the stall one statement on,
+  // to `New-Object`. The common factor is the first CMDLET: command discovery
+  // in the stripped probe environment never returns, while direct .NET member
+  // calls never wait on it. So the script may use language keywords, operators
+  // and .NET types only — every Verb-Noun token must be a function it defines.
+  const { readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+
+  for (const file of [
+    "src/lib/server/client-v1/path-ownership.ts",
+    "server.ts",
+  ]) {
+    const source = await readFile(resolve(process.cwd(), file), "utf8");
+    const script = /const WINDOWS_ACL_SCRIPT = `([\s\S]*?)`;/u.exec(source)![1]!;
+    const defined = new Set(
+      [...script.matchAll(/^function ([A-Z][A-Za-z]+-[A-Z][A-Za-z]+)/gmu)].map((m) => m[1]),
+    );
+    const invoked = [...script.matchAll(/(?<![\w$'"-])([A-Z][A-Za-z]+-[A-Z][A-Za-z]+)\b/gu)]
+      .map((m) => m[1]!)
+      .filter((name) => !defined.has(name));
+    assert.deepEqual(
+      [...new Set(invoked)],
+      [],
+      `${file} must not invoke cmdlets; each one triggers PowerShell command discovery`,
+    );
+    assert.doesNotMatch(
+      script,
+      /\|\s*(ForEach|Where|Select|ConvertTo|Sort)-/u,
+      `${file} must not pipe through cmdlets`,
+    );
+  }
+});
