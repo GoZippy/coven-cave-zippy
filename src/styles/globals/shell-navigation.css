@@ -687,13 +687,25 @@
 .cnav__thread[data-attention="left-hanging"] {
   background: color-mix(in oklch, var(--color-warning) 7%, transparent);
 }
-.cnav__thread[data-attention="awaiting-human"] {
+/* Waiting is ONE field, however long it has been waiting.
+ *
+ * overdue-human used to carry --danger-bg/--danger-border here: a row-wide red
+ * field, identical to a genuine failure, on a session that was only ever
+ * queued behind the reader. Fifteen of those at once is the alarm wall the
+ * redesign handoff §5 diagnoses, and it is why red now means failed and
+ * nothing else. Sharing awaiting-human's selector rather than restating its
+ * values keeps the two from drifting apart again. */
+.cnav__thread[data-attention="awaiting-human"],
+.cnav__thread[data-attention="overdue-human"] {
   border-color: color-mix(in oklch, var(--color-warning) 38%, var(--border-hairline));
   background: color-mix(in oklch, var(--color-warning) 14%, transparent);
 }
-.cnav__thread[data-attention="overdue-human"] {
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
+/* Blocked is the stronger waiting state — stopped on a gate only this person
+   can open. Same recipe, one token further toward red without being red.
+   Follows the rule above so it wins at equal specificity. */
+.cnav__thread[data-attention-kind="blocked"] {
+  border-color: color-mix(in oklch, var(--status-blocked) 38%, var(--border-hairline));
+  background: color-mix(in oklch, var(--status-blocked) 14%, transparent);
 }
 .cnav__thread[data-attention="left-hanging"] .cnav__thread-main,
 .cnav__thread[data-attention="awaiting-human"] .cnav__thread-main,
@@ -738,15 +750,16 @@
   --cnav-active-background: color-mix(in oklch, var(--color-warning) 7%, var(--bg-raised));
   background: color-mix(in oklch, var(--color-warning) 7%, var(--bg-raised));
 }
-.cnav__thread.is-active[data-attention="awaiting-human"] {
+.cnav__thread.is-active[data-attention="awaiting-human"],
+.cnav__thread.is-active[data-attention="overdue-human"] {
   --cnav-active-background: color-mix(in oklch, var(--color-warning) 14%, var(--bg-raised));
   border-color: color-mix(in oklch, var(--color-warning) 38%, var(--border-hairline));
   background: color-mix(in oklch, var(--color-warning) 14%, var(--bg-raised));
 }
-.cnav__thread.is-active[data-attention="overdue-human"] {
-  --cnav-active-background: var(--danger-bg);
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
+.cnav__thread.is-active[data-attention-kind="blocked"] {
+  --cnav-active-background: color-mix(in oklch, var(--status-blocked) 14%, var(--bg-raised));
+  border-color: color-mix(in oklch, var(--status-blocked) 38%, var(--border-hairline));
+  background: color-mix(in oklch, var(--status-blocked) 14%, var(--bg-raised));
 }
 .cnav__thread.is-active::after {
   content: "";
