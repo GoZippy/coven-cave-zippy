@@ -249,6 +249,8 @@ export const SUITES = {
     "src/lib/server/x-publications.test.ts",
     "src/lib/x-publish-composer.test.ts",
     "src/components/role-surfaces/x-publish-panel-behavior.test.tsx",
+    "src/lib/x-comms-model.test.ts",
+    "src/components/role-surfaces/x-comms-surface.behavior.test.tsx",
     "src/lib/open-system-browser.test.ts",
     "src/components/familiar-x-section.test.ts",
     "src/components/familiar-x-section-behavior.test.tsx",
@@ -2111,6 +2113,9 @@ export const SUITE_PREFLIGHTS = {
 };
 
 const ALIAS_LOADER = new Set([
+  // x-comms-model.ts imports "@/lib/x-publish-composer" as a runtime value —
+  // deliberately, so the two X rooms share one definition of the 280 limit.
+  "src/lib/x-comms-model.test.ts",
   "src/app/api/flows/runs/route.test.ts",
   "src/lib/server/flow-session-ownership.test.ts",
   "src/lib/server/flow-attention.test.ts",
@@ -2507,6 +2512,8 @@ const RAW_SOURCE_SCANNER_TESTS = new Set([
 // Rendered TSX interaction tests run through Vitest's Vite transform rather
 // than Node's type stripper, which intentionally does not transform JSX.
 const VITEST_TESTS = new Set([
+  // Renders the whole X Comms room through react-test-renderer (JSX).
+  "src/components/role-surfaces/x-comms-surface.behavior.test.tsx",
   "src/components/reminder-link-field.behavior.test.tsx",
   "src/components/flow-execution-link.test.tsx",
   "src/components/role-surfaces/researcher-surface-link.test.tsx",
