@@ -1011,6 +1011,16 @@ test("the ACL probe reads access rules as SIDs without account translation", asy
       /\$acl\.Access\b/u,
       `${file} must not enumerate the account-translating Access property`,
     );
+    assert.doesNotMatch(
+      script![1],
+      /\bGet-Item\b/u,
+      `${file} must not initialize the PowerShell filesystem provider to resolve the path`,
+    );
+    assert.match(
+      script![1],
+      /\[System\.IO\.Directory\]::Exists\(\$path\)[\s\S]*?\[System\.IO\.DirectoryInfo\]::new\(\$path\)[\s\S]*?\[System\.IO\.File\]::Exists\(\$path\)[\s\S]*?\[System\.IO\.FileInfo\]::new\(\$path\)/u,
+      `${file} must resolve the existing path through direct .NET filesystem APIs`,
+    );
     assert.match(
       script![1],
       /\$rule\.IdentityReference\.Value -eq \$ownerRights\.Value[\s\S]*?\$rule\.FileSystemRights -band \$writableRights\) -eq 0[\s\S]*?continue/u,
