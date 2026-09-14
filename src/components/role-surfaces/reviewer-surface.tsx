@@ -564,12 +564,14 @@ export function ReviewerSurface({ context }: { context: RoleSurfaceContext }) {
     const result = progress.toggle(path);
     confirm(
       result.completed
-        ? `Reviewed ${path}. Every readable file on head ${workItem.revision.slice(0, 7)} is reviewed.`
+        ? source.revision
+          ? `Reviewed ${path}. Every readable file on head ${source.revision.headSha.slice(0, 7)} is reviewed.`
+          : `Reviewed ${path}. Every readable file in this working tree is reviewed.`
         : result.reviewed
           ? `Marked ${path} reviewed.`
           : `Marked ${path} unread.`,
     );
-  }, [confirm, progress, source.openPath, workItem]);
+  }, [confirm, progress, source.openPath, source.revision, workItem]);
 
   const openUnread = useCallback(
     (direction: 1 | -1) => {

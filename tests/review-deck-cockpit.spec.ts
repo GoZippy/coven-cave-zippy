@@ -332,10 +332,21 @@ test.describe("Review Deck cockpit", () => {
     await page.getByRole("button", { name: "Refresh review queue" }).click();
     await expect(page.locator(".rd-diff-card")).toContainText("revisionB");
     await expect(page.locator(".rd-verdict-primary")).toBeEnabled();
+    await page.getByRole("button", { name: "Mark new.ts reviewed (r)" }).click();
+    await expect(page.locator(".rd-toast")).toHaveText("Reviewed new.ts. Every readable file on head ddddddd is reviewed.");
     await page.locator(".rd-verdict-primary").click();
     const request = page.waitForRequest((request) => request.url().includes("/api/github/merge") && request.method() === "POST");
     await page.getByRole("dialog").getByRole("button", { name: /Squash.*merge/i }).click();
     expect((await request).postDataJSON()).toMatchObject({ headSha, reviewedRevision: revision });
+  });
+
+  test("local review completion names the working tree rather than a fabricated head", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 980 });
+    await openReviewDeck(page);
+    await page.locator(".rd-row", { hasText: "Ensure new projects have a subject line" }).click();
+    await page.getByRole("button", { name: "Mark chat-view.tsx reviewed (r)" }).click();
+    await expect(page.locator(".rd-toast")).toHaveText("Reviewed src/components/chat-view.tsx. Every readable file in this working tree is reviewed.");
+    await expect(page.locator(".rd-verdict-primary")).toBeDisabled();
   });
 
   test("three columns lay out side by side, and each collapses without stranding the diff", async ({

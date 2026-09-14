@@ -274,6 +274,11 @@ never fake production data.
   request-changes / squash-merge continue to dispatch through the real GitHub
   routes. PR diffs use GitHub's immutable `baseSha...headSha` comparison,
   retaining the merge-base SHA for the PR's three-dot patch semantics.
+  GitHub's [comparison contract](https://docs.github.com/en/rest/commits/commits#compare-two-commits)
+  supports commit SHAs across the same repository network, including forks.
+  The request therefore does not depend on a fork's current owner, repository
+  name or branch ref. If GitHub cannot expose those commits to the current
+  caller, the error stays visible; there is no mutable-ref or PR-files fallback.
   Verdicts require the displayed repository, PR number, base ref, base SHA and
   head SHA to match readiness. Missing identity, a stale diff or an in-flight
   read holds actions with an explicit error/loading state; refresh reads both

@@ -79,6 +79,8 @@ export async function GET(req: Request) {
     const revision = await readGitHubPullRevision(repo, number, token);
     // GitHub's three-dot comparison uses the merge base, like a PR diff, but
     // both requested endpoints are immutable even if the author pushes again.
+    // Commit SHAs resolve across the repository's fork network; unlike an
+    // owner:branch ref, this also avoids depending on a fork's current name.
     const res = await fetch(`${GH}/repos/${repo}/compare/${revision.baseSha}...${revision.headSha}?per_page=1`, {
       headers: {
         Accept: "application/vnd.github+json",
