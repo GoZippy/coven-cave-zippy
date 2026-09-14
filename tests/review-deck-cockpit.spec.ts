@@ -332,7 +332,7 @@ test.describe("Review Deck cockpit", () => {
     await page.getByRole("button", { name: "Refresh review queue" }).click();
     await expect(page.locator(".rd-diff-card")).toContainText("revisionB");
     await expect(page.locator(".rd-verdict-primary")).toBeEnabled();
-    await page.getByRole("button", { name: "Mark new.ts reviewed (r)" }).click();
+    await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
     await expect(page.locator(".rd-toast")).toHaveText("Reviewed new.ts. Every readable file on head ddddddd is reviewed.");
     await page.locator(".rd-verdict-primary").click();
     const request = page.waitForRequest((request) => request.url().includes("/api/github/merge") && request.method() === "POST");
@@ -344,9 +344,41 @@ test.describe("Review Deck cockpit", () => {
     await page.setViewportSize({ width: 1600, height: 980 });
     await openReviewDeck(page);
     await page.locator(".rd-row", { hasText: "Ensure new projects have a subject line" }).click();
-    await page.getByRole("button", { name: "Mark chat-view.tsx reviewed (r)" }).click();
+    await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
     await expect(page.locator(".rd-toast")).toHaveText("Reviewed src/components/chat-view.tsx. Every readable file in this working tree is reviewed.");
     await expect(page.locator(".rd-verdict-primary")).toBeDisabled();
+  });
+
+  test("a pending shared-file diff cannot survive a switch to a different actionable PR", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 980 });
+    const handles = await openReviewDeck(page);
+    let releaseA: (() => Promise<void>) | null = null;
+    let releaseB: (() => Promise<void>) | null = null;
+    await page.route(/\/api\/github\/diff\?/, (route) => new Promise<void>((resolve) => {
+      const ref = refOf(route.request().url());
+      const release = async () => {
+        await route.fulfill({ json: {
+          ok: true, ...(DIFFS[ref] as object), total: 1,
+          files: [{ filename: "shared.ts", patch: `@@ -0,0 +1 @@\n+${ref === BLOCKED ? "PATCH_A" : "PATCH_B"}` }],
+        } });
+        resolve();
+      };
+      if (ref === BLOCKED) releaseA = release;
+      else releaseB = release;
+    }));
+    await page.locator(".rd-row", { hasText: "Roster group chat protocol" }).click();
+    await expect.poll(() => releaseA !== null).toBe(true);
+    const switchSelection = page.locator(".rd-row", { hasText: "Session share links" }).click();
+    await releaseA!();
+    await switchSelection;
+    await expect.poll(() => releaseB !== null).toBe(true);
+    await expect(page.locator(".rd-verdict-primary")).toBeDisabled();
+    await expect(page.locator(".rd-diff-card")).not.toContainText("PATCH_A");
+    await releaseB!();
+    await expect(page.locator(".rd-diff-card")).toContainText("PATCH_B");
+    await expect(page.locator(".rd-diff-card")).not.toContainText("PATCH_A");
+    await expect(page.locator(".rd-verdict-primary")).toBeEnabled();
+    expect(handles.mutations).toEqual([]);
   });
 
   test("three columns lay out side by side, and each collapses without stranding the diff", async ({

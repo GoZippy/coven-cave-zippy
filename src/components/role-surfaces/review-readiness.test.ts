@@ -93,6 +93,118 @@ function itemWire() {
 
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+for (const transition of ["selection", "refresh"] as const) {
+  test(`a batched A completion and ${transition} cannot attach cached patch A to revision B`, async (t) => {
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { value: true, configurable: true });
+    t.after(() => { Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"); });
+    const pending: Array<(response: Response) => void> = [];
+    let headSha = "a".repeat(40);
+    t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/diff?")) return new Promise<Response>((resolve) => { pending.push(resolve); });
+      if (url.includes("/item?")) return Response.json({ ...itemWire(), pull: { ...facts(), headSha } });
+      if (url.includes("/checks?")) return Response.json({ ok: true, sha: headSha, runs: [run("build", "success")], statuses: [] });
+      if (url.includes("/comments?")) return Response.json({ ok: true, reviewEvidenceComplete: true, reviews: [], reviewThreads: [] });
+      throw new Error(`Unexpected read: ${url}`);
+    });
+    const response = (number: number, sha: string, patch: string) => Response.json({
+      ok: true, revision: { repo: "o/r", number, headSha: sha, baseSha: facts().baseSha, baseRef: "main", mergeBaseSha: "c".repeat(40) },
+      files: [{ filename: "shared.ts", patch }],
+    });
+    let source!: ReviewSource;
+    let readiness!: PrReadiness;
+    const displayed: Array<{ selected: number; revision: string | undefined; patch: string | null; filePatch: string | null | undefined; canAct: boolean }> = [];
+    function Probe({ number }: { number: number }) {
+      source = useReviewSource({ pr: { repo: "o/r", number }, projectRoot: null, scope: "same-session" });
+      readiness = usePrReadiness({ repo: "o/r", number });
+      displayed.push({
+        selected: number, revision: source.revision?.headSha, patch: source.openPatch.text,
+        filePatch: source.files.find((file) => file.path === source.openPath)?.patch,
+        canAct: reviewActionsAvailable({
+          sourceKind: source.kind,
+          sourcePhase: source.files.length === 0 || source.openPatch.phase === "ready" ? source.phase : "loading",
+          displayedRevision: source.revision, currentRevision: readiness.facts,
+          readinessPhase: readiness.phase, state: readiness.facts?.state, draft: readiness.facts?.draft,
+        }),
+      });
+      return null;
+    }
+    let root!: ReturnType<typeof create>;
+    try {
+      await act(async () => { root = create(createElement(Probe, { number: 7 })); });
+      const retry = source.retry;
+      await act(async () => {
+        pending[0](response(7, headSha, "+patch A"));
+        // Let real Response.json queue A's state updates, but retain React's
+        // batch while changing selection / starting the next generation.
+        await settle();
+        headSha = "d".repeat(40);
+        if (transition === "selection") root.update(createElement(Probe, { number: 8 }));
+        else { retry(); readiness.refresh(); }
+      });
+      assert.equal(source.phase, "loading");
+      const loadingPatch = source.openPatch.text;
+      await act(async () => { pending[1](response(transition === "selection" ? 8 : 7, headSha, "+patch B")); });
+      assert.equal(source.revision?.headSha, headSha);
+      assert.equal(source.files[0].patch, "+patch B");
+      assert.equal(readiness.phase, "ready");
+      assert.equal(isReadyToMerge(readiness.facts), true);
+      assert.equal(displayed.at(-1)?.canAct, true);
+      assert.equal(source.openPatch.text, "+patch B", "rendered patch must belong to the displayed revision's file list");
+      assert.equal(loadingPatch, null, "loading B must not expose a cached A patch");
+      for (const render of displayed.filter((render) => render.canAct)) {
+        assert.equal(render.patch, render.filePatch, "an enabled verdict must never authorize a different cached patch");
+      }
+    } finally {
+      if (root) await act(async () => { root.unmount(); });
+    }
+  });
+}
+
+test("batched local list completion cannot open an old file under the replacement project", async (t) => {
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { value: true, configurable: true });
+  t.after(() => { Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"); });
+  const pending: Array<{ project: string; path: string | null; resolve: (response: Response) => void }> = [];
+  t.mock.method(globalThis, "fetch", (input: string | URL | Request) => new Promise<Response>((resolve) => {
+    const url = new URL(String(input), "http://localhost");
+    assert.equal(url.pathname, "/api/changes");
+    pending.push({ project: url.searchParams.get("projectRoot")!, path: url.searchParams.get("path"), resolve });
+  }));
+  let source!: ReviewSource;
+  function Probe({ project }: { project: string }) {
+    source = useReviewSource({ pr: null, projectRoot: project, scope: "same-session" });
+    return null;
+  }
+  const list = (project: string, path: string) => Response.json({
+    ok: true, repo: true, repoRoot: project, branch: "main", worktree: null,
+    files: [{ path, status: "modified", insertions: 1, deletions: 0 }],
+  });
+  let root!: ReturnType<typeof create>;
+  try {
+    await act(async () => { root = create(createElement(Probe, { project: "/A" })); });
+    await act(async () => {
+      pending[0].resolve(list("/A", "old.ts"));
+      await settle();
+      root.update(createElement(Probe, { project: "/B" }));
+    });
+    assert.deepEqual(pending.map(({ project, path }) => ({ project, path })), [
+      { project: "/A", path: null }, { project: "/B", path: null },
+    ], "a stale auto-open must not read old.ts under project B");
+    await act(async () => { pending[1].resolve(list("/B", "current.ts")); });
+    assert.equal(pending[2].path, "current.ts");
+    await act(async () => { source.retry(); });
+    await act(async () => { pending[3].resolve(list("/B", "current.ts")); });
+    await act(async () => { pending[4].resolve(Response.json({ ok: true, diff: "+current local B" })); });
+    await act(async () => { pending[2].resolve(Response.json({ ok: true, diff: "+outdated local B" })); });
+    assert.equal(source.openPatch.text, "+current local B");
+    assert.equal(source.localBranch, "main");
+    assert.equal(source.kind, "local");
+    assert.equal(source.revision, null);
+  } finally {
+    if (root) await act(async () => { root.unmount(); });
+  }
+});
+
 test("production source A plus readiness B cannot enable a verdict; matching revisions can", async (t) => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { value: true, configurable: true });
   t.after(() => { Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"); });

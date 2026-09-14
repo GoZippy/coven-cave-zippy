@@ -284,6 +284,11 @@ never fake production data.
   read holds actions with an explicit error/loading state; refresh reads both
   again. Review progress and confirmation dialogs are scoped to that displayed
   revision, not independently fetched readiness.
+  The displayed PR patch is derived directly from the current revision's file
+  list, not a separate effect-populated patch cache. File-opening effects and
+  retained callbacks must still own the current list request generation, so a
+  response batched with selection or refresh cannot open stale files under a
+  new PR or local project.
   Verdict requests carry the displayed revision; the server correlates it with
   a fresh PR read before dispatch. Reviews use GitHub's `commit_id`, and merges
   retain its atomic head `sha` guard. GitHub provides no atomic base-SHA merge
