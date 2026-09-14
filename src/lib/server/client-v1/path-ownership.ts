@@ -16,6 +16,8 @@ const execFileAsync = promisify(execFile);
  */
 const WINDOWS_SYSTEM_SID = "S-1-5-18";
 const WINDOWS_ADMINISTRATORS_SID = "S-1-5-32-544";
+const WINDOWS_OWNER_RIGHTS_SID = "S-1-3-4";
+const WINDOWS_WRITABLE_RIGHTS_MASK = 0x500d_0156;
 
 // ── The unverified-ownership waiver ─────────────────────────────────────────
 // The four constants below, `resolveUnverifiedOwnershipWaiver`, and the three
@@ -168,10 +170,21 @@ export interface ClientV1WindowsAclReport {
   /** SIDs the repair stripped, empty when nothing had to change. */
   removed: string[];
   /** The DACL as it stands now. */
-  aces: { sid: string; type: string }[];
+  aces: { sid: string; type: string; rights?: number }[];
 }
 
 export type ClientV1WindowsAclProbe = (path: string) => Promise<ClientV1WindowsAclReport>;
+export type ClientV1WindowsAclExecutor = (
+  file: string,
+  args: string[],
+  options: {
+    env: NodeJS.ProcessEnv;
+    encoding: "utf8";
+    windowsHide: true;
+    timeout: number;
+    maxBuffer: number;
+  },
+) => Promise<{ stdout: string }>;
 
 export interface ClientV1PathOwnershipOptions {
   /**
@@ -220,15 +233,24 @@ $item = Get-Item -LiteralPath $env:COVEN_CAVE_CLIENT_V1_ACL_PATH -Force
 $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = New-Object System.Security.Principal.SecurityIdentifier('${WINDOWS_SYSTEM_SID}')
 $admins = New-Object System.Security.Principal.SecurityIdentifier('${WINDOWS_ADMINISTRATORS_SID}')
+$ownerRights = New-Object System.Security.Principal.SecurityIdentifier('${WINDOWS_OWNER_RIGHTS_SID}')
+$writableRights = [uint32]${WINDOWS_WRITABLE_RIGHTS_MASK}
 $trusted = @($me.Value, $system.Value, $admins.Value)
 
 function Read-State {
   param($target)
   $acl = $target.GetAccessControl('Access,Owner')
-  $aces = @($acl.Access | ForEach-Object {
+  # Keep account-name lookup out of the security boundary: orphaned or remote
+  # principals can make IdentityReference.Translate block on Windows.
+  $aces = @($acl.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ) | ForEach-Object {
     [pscustomobject]@{
-      sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+      sid = $_.IdentityReference.Value
       type = [string]$_.AccessControlType
+      rights = [uint32]$_.FileSystemRights
     }
   })
   [pscustomobject]@{
@@ -244,7 +266,10 @@ function Test-Exclusive {
   if ($state.owner -ne $me.Value) { return $false }
   foreach ($ace in $state.aces) {
     if ($ace.type -ne 'Allow') { return $false }
-    if ($trusted -notcontains $ace.sid) { return $false }
+    if ($trusted -contains $ace.sid) { continue }
+    if ($ace.sid -eq $ownerRights.Value -and
+        (([uint32]$ace.rights -band $writableRights) -eq 0)) { continue }
+    return $false
   }
   return $true
 }
@@ -253,14 +278,32 @@ $state = Read-State $item
 $repaired = $false
 $removed = @()
 if (-not (Test-Exclusive $state)) {
-  $removed = @($state.aces | Where-Object { $trusted -notcontains $_.sid } |
+  $removed = @($state.aces | Where-Object {
+    $trusted -notcontains $_.sid -and
+      -not ($_.sid -eq $ownerRights.Value -and
+        (([uint32]$_.rights -band $writableRights) -eq 0))
+  } |
     ForEach-Object { $_.sid } | Select-Object -Unique)
   $acl = $item.GetAccessControl('Access')
   if ($state.owner -ne $me.Value) {
     $acl.SetOwner($me)
   }
   $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+  # Enumerate the explicit post-protection rules in the same SID-native form.
+  foreach ($rule in @($acl.GetAccessRules(
+    $true,
+    $false,
+    [System.Security.Principal.SecurityIdentifier]
+  ))) {
+    if (
+      $rule.IdentityReference.Value -eq $ownerRights.Value -and
+      [string]$rule.AccessControlType -eq 'Allow' -and
+      (([uint32]$rule.FileSystemRights -band $writableRights) -eq 0)
+    ) {
+      continue
+    }
+    [void]$acl.RemoveAccessRuleSpecific($rule)
+  }
   $inheritance = if ($item.PSIsContainer) { 'ContainerInherit, ObjectInherit' } else { 'None' }
   foreach ($sid in @($me, $system, $admins)) {
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
@@ -290,6 +333,16 @@ function windowsPowerShellPath(): string {
   // otherwise answer the ownership question with their own `powershell.exe`,
   // which is the one spoof a guard like this must not accept.
   return join(windowsSystemRoot(), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
+const WINDOWS_ACL_PROBE_TIMEOUT_MS = 12_000;
+const WINDOWS_ACL_PROBE_MAX_ATTEMPTS = 2;
+
+function windowsAclProbeTimedOut(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const failure = error as { code?: unknown; killed?: unknown; signal?: unknown };
+  return failure.code === "ETIMEDOUT"
+    || (failure.killed === true && failure.signal === "SIGTERM");
 }
 
 /**
@@ -358,35 +411,64 @@ export function parseClientV1WindowsAclReport(raw: string): ClientV1WindowsAclRe
     removed: removed.map((sid) => String(sid)),
     aces: aces.map((ace) => {
       const entry = (ace ?? {}) as Record<string, unknown>;
-      return { sid: String(entry.sid ?? ""), type: String(entry.type ?? "") };
+      if (
+        !Number.isInteger(entry.rights)
+        || (entry.rights as number) < 0
+        || (entry.rights as number) > 0xffff_ffff
+      ) {
+        throw new Error("the ACL probe returned a malformed report");
+      }
+      return {
+        sid: String(entry.sid ?? ""),
+        type: String(entry.type ?? ""),
+        rights: entry.rights as number,
+      };
     }),
   };
 }
 
-export const probeWindowsAcl: ClientV1WindowsAclProbe = async (path) => {
-  const { stdout } = await execFileAsync(
-    windowsPowerShellPath(),
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-NoLogo",
-      "-InputFormat",
-      "None",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      WINDOWS_ACL_SCRIPT,
-    ],
-    {
-      env: windowsProbeEnv(path),
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 60_000,
-      maxBuffer: 1024 * 1024,
-    },
-  );
-  return parseClientV1WindowsAclReport(stdout);
-};
+export function createClientV1WindowsAclProbe(
+  execute: ClientV1WindowsAclExecutor = execFileAsync as ClientV1WindowsAclExecutor,
+): ClientV1WindowsAclProbe {
+  return async (path) => {
+    for (let attempt = 0; attempt < WINDOWS_ACL_PROBE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const { stdout } = await execute(
+          windowsPowerShellPath(),
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-NoLogo",
+            "-InputFormat",
+            "None",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            WINDOWS_ACL_SCRIPT,
+          ],
+          {
+            env: windowsProbeEnv(path),
+            encoding: "utf8",
+            windowsHide: true,
+            timeout: WINDOWS_ACL_PROBE_TIMEOUT_MS,
+            maxBuffer: 1024 * 1024,
+          },
+        );
+        return parseClientV1WindowsAclReport(stdout);
+      } catch (error) {
+        if (
+          attempt + 1 >= WINDOWS_ACL_PROBE_MAX_ATTEMPTS
+          || !windowsAclProbeTimedOut(error)
+        ) {
+          throw error;
+        }
+      }
+    }
+    throw new Error("the ACL probe attempt bound was exhausted");
+  };
+}
+
+export const probeWindowsAcl = createClientV1WindowsAclProbe();
 
 /**
  * Findings that make a path unusable, or an empty list when it is exclusive.
@@ -399,7 +481,17 @@ function exclusivityFindings(report: ClientV1WindowsAclReport): string[] {
   }
   if (!report.protected) findings.push("its DACL still inherits from the parent");
   const foreign = report.aces
-    .filter((ace) => ace.type !== "Allow" || !trusted.has(ace.sid))
+    .filter((ace) =>
+      ace.type !== "Allow"
+      || (
+        !trusted.has(ace.sid)
+        && !(
+          ace.sid === WINDOWS_OWNER_RIGHTS_SID
+          && Number.isInteger(ace.rights)
+          && ((ace.rights as number) & WINDOWS_WRITABLE_RIGHTS_MASK) === 0
+        )
+      )
+    )
     .map((ace) => `${ace.type}:${ace.sid}`);
   if (foreign.length > 0) {
     findings.push(`access granted to ${[...new Set(foreign)].join(", ")}`);

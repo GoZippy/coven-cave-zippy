@@ -25,6 +25,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { getHeapStatistics, writeHeapSnapshot } from "node:v8";
 
@@ -276,6 +277,11 @@ function clientV1DiscoveryFile(): string {
 // discovery.test.ts pins this script so packaging changes cannot weaken it.
 const WINDOWS_SYSTEM_SID = "S-1-5-18";
 const WINDOWS_ADMINISTRATORS_SID = "S-1-5-32-544";
+const WINDOWS_OWNER_RIGHTS_SID = "S-1-3-4";
+const WINDOWS_WRITABLE_RIGHTS_MASK = 0x500d_0156;
+const WINDOWS_ACL_PROBE_TIMEOUT_MS = 12_000;
+const WINDOWS_ACL_PROBE_MAX_ATTEMPTS = 2;
+const WINDOWS_ACL_PUBLICATION_BUDGET_MS = 24_000;
 
 // The unverified-ownership waiver, inlined from path-ownership.ts for the same
 // reason as the script below. See that module for why it is shaped this way;
@@ -373,15 +379,24 @@ $item = Get-Item -LiteralPath $env:COVEN_CAVE_CLIENT_V1_ACL_PATH -Force
 $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = New-Object System.Security.Principal.SecurityIdentifier('${WINDOWS_SYSTEM_SID}')
 $admins = New-Object System.Security.Principal.SecurityIdentifier('${WINDOWS_ADMINISTRATORS_SID}')
+$ownerRights = New-Object System.Security.Principal.SecurityIdentifier('${WINDOWS_OWNER_RIGHTS_SID}')
+$writableRights = [uint32]${WINDOWS_WRITABLE_RIGHTS_MASK}
 $trusted = @($me.Value, $system.Value, $admins.Value)
 
 function Read-State {
   param($target)
   $acl = $target.GetAccessControl('Access,Owner')
-  $aces = @($acl.Access | ForEach-Object {
+  # Keep account-name lookup out of the security boundary: orphaned or remote
+  # principals can make IdentityReference.Translate block on Windows.
+  $aces = @($acl.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ) | ForEach-Object {
     [pscustomobject]@{
-      sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+      sid = $_.IdentityReference.Value
       type = [string]$_.AccessControlType
+      rights = [uint32]$_.FileSystemRights
     }
   })
   [pscustomobject]@{
@@ -397,7 +412,10 @@ function Test-Exclusive {
   if ($state.owner -ne $me.Value) { return $false }
   foreach ($ace in $state.aces) {
     if ($ace.type -ne 'Allow') { return $false }
-    if ($trusted -notcontains $ace.sid) { return $false }
+    if ($trusted -contains $ace.sid) { continue }
+    if ($ace.sid -eq $ownerRights.Value -and
+        (([uint32]$ace.rights -band $writableRights) -eq 0)) { continue }
+    return $false
   }
   return $true
 }
@@ -406,14 +424,32 @@ $state = Read-State $item
 $repaired = $false
 $removed = @()
 if (-not (Test-Exclusive $state)) {
-  $removed = @($state.aces | Where-Object { $trusted -notcontains $_.sid } |
+  $removed = @($state.aces | Where-Object {
+    $trusted -notcontains $_.sid -and
+      -not ($_.sid -eq $ownerRights.Value -and
+        (([uint32]$_.rights -band $writableRights) -eq 0))
+  } |
     ForEach-Object { $_.sid } | Select-Object -Unique)
   $acl = $item.GetAccessControl('Access')
   if ($state.owner -ne $me.Value) {
     $acl.SetOwner($me)
   }
   $acl.SetAccessRuleProtection($true, $false)
-  foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+  # Enumerate the explicit post-protection rules in the same SID-native form.
+  foreach ($rule in @($acl.GetAccessRules(
+    $true,
+    $false,
+    [System.Security.Principal.SecurityIdentifier]
+  ))) {
+    if (
+      $rule.IdentityReference.Value -eq $ownerRights.Value -and
+      [string]$rule.AccessControlType -eq 'Allow' -and
+      (([uint32]$rule.FileSystemRights -band $writableRights) -eq 0)
+    ) {
+      continue
+    }
+    [void]$acl.RemoveAccessRuleSpecific($rule)
+  }
   $inheritance = if ($item.PSIsContainer) { 'ContainerInherit, ObjectInherit' } else { 'None' }
   foreach ($sid in @($me, $system, $admins)) {
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
@@ -465,7 +501,18 @@ function discoveryPublicationFailure(
   return error;
 }
 
-function assertStandaloneWindowsExclusive(path: string, label: "root" | "target"): void {
+function standaloneWindowsAclProbeTimedOut(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const failure = error as { code?: unknown; killed?: unknown; signal?: unknown };
+  return failure.code === "ETIMEDOUT"
+    || (failure.killed === true && failure.signal === "SIGTERM");
+}
+
+function assertStandaloneWindowsExclusive(
+  path: string,
+  label: "root" | "target",
+  deadline = performance.now() + WINDOWS_ACL_PUBLICATION_BUDGET_MS,
+): void {
   if (standaloneVerifiedWindowsPaths.has(path)) return;
   if (standaloneWaivedWindowsPaths.has(path)) return;
   const subject = `Client v1 discovery ${label}`;
@@ -494,30 +541,53 @@ function assertStandaloneWindowsExclusive(path: string, label: "root" | "target"
     protected: boolean;
     repaired: boolean;
     removed: string[];
-    aces: { sid: string; type: string }[];
+    aces: { sid: string; type: string; rights: number }[];
   };
   try {
-    report = JSON.parse(execFileSync(
-      join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-NoLogo",
-        "-InputFormat",
-        "None",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        WINDOWS_ACL_SCRIPT,
-      ],
-      {
-        env: probeEnv,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 60_000,
-        maxBuffer: 1024 * 1024,
-      },
-    ));
+    let rawReport: string | undefined;
+    for (let attempt = 0; attempt < WINDOWS_ACL_PROBE_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const remaining = Math.floor(deadline - performance.now());
+        if (remaining <= 0) {
+          throw Object.assign(new Error("the ACL publication probe budget was exhausted"), {
+            code: "ETIMEDOUT",
+          });
+        }
+        rawReport = execFileSync(
+          join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-NoLogo",
+            "-InputFormat",
+            "None",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            WINDOWS_ACL_SCRIPT,
+          ],
+          {
+            env: probeEnv,
+            encoding: "utf8",
+            windowsHide: true,
+            timeout: Math.min(WINDOWS_ACL_PROBE_TIMEOUT_MS, remaining),
+            maxBuffer: 1024 * 1024,
+          },
+        );
+        break;
+      } catch (error) {
+        if (
+          attempt + 1 >= WINDOWS_ACL_PROBE_MAX_ATTEMPTS
+          || !standaloneWindowsAclProbeTimedOut(error)
+        ) {
+          throw error;
+        }
+      }
+    }
+    if (rawReport === undefined) {
+      throw new Error("the ACL probe attempt bound was exhausted");
+    }
+    report = JSON.parse(rawReport);
     // `aces` carries the whole access decision, so a shape this cannot read has
     // to be an error rather than a default: an absent or non-array `aces` reads
     // downstream as "no principal has access" and would therefore admit the
@@ -533,6 +603,13 @@ function assertStandaloneWindowsExclusive(path: string, label: "root" | "target"
       || typeof report.repaired !== "boolean"
       || !Array.isArray(report.aces)
       || !Array.isArray(report.removed)
+      || report.aces.some((ace) =>
+        !ace
+        || typeof ace !== "object"
+        || !Number.isInteger(ace.rights)
+        || ace.rights < 0
+        || ace.rights > 0xffff_ffff
+      )
     ) {
       throw new Error("the ACL probe returned a malformed report");
     }
@@ -559,7 +636,17 @@ function assertStandaloneWindowsExclusive(path: string, label: "root" | "target"
   }
   if (!report.protected) findings.push("its DACL still inherits from the parent");
   const foreign = report.aces
-    .filter((ace) => ace.type !== "Allow" || !trusted.has(ace.sid))
+    .filter((ace) =>
+      ace.type !== "Allow"
+      || (
+        !trusted.has(ace.sid)
+        && !(
+          ace.sid === WINDOWS_OWNER_RIGHTS_SID
+          && Number.isInteger(ace.rights)
+          && ((ace.rights as number) & WINDOWS_WRITABLE_RIGHTS_MASK) === 0
+        )
+      )
+    )
     .map((ace) => `${ace.type}:${ace.sid}`);
   if (foreign.length > 0) {
     findings.push(`access granted to ${[...new Set(foreign)].join(", ")}`);
@@ -584,6 +671,7 @@ function requireStandaloneOwner(
   path: string,
   metadata: NonNullable<ReturnType<typeof lstatSync>>,
   label: "root" | "target",
+  windowsAclProbeDeadline?: number,
 ): void {
   // The uid comparison alone was inert on win32 — `process.getuid` is undefined
   // there and `lstat` reports uid 0 for every path — so the discovery record
@@ -604,10 +692,10 @@ function requireStandaloneOwner(
       + `this platform exposes neither a uid nor a Windows ACL, so ${path} is refused.`,
     ));
   }
-  assertStandaloneWindowsExclusive(path, label);
+  assertStandaloneWindowsExclusive(path, label, windowsAclProbeDeadline);
 }
 
-function assertStandaloneDiscoveryTarget(path: string): void {
+function assertStandaloneDiscoveryTarget(path: string, windowsAclProbeDeadline?: number): void {
   try {
     const metadata = lstatSync(path);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
@@ -616,7 +704,7 @@ function assertStandaloneDiscoveryTarget(path: string): void {
         new Error(`Client v1 discovery target must be a regular file: ${path}.`),
       );
     }
-    requireStandaloneOwner(path, metadata, "target");
+    requireStandaloneOwner(path, metadata, "target", windowsAclProbeDeadline);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
@@ -624,6 +712,7 @@ function assertStandaloneDiscoveryTarget(path: string): void {
 }
 
 function publishStandaloneClientV1DiscoveryRecord(endpoint: string): void {
+  const windowsAclProbeDeadline = performance.now() + WINDOWS_ACL_PUBLICATION_BUDGET_MS;
   const root = join(clientV1DiscoveryFile(), "..");
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const rootMetadata = lstatSync(root);
@@ -633,7 +722,7 @@ function publishStandaloneClientV1DiscoveryRecord(endpoint: string): void {
       new Error("Client v1 discovery root must be a real directory."),
     );
   }
-  requireStandaloneOwner(root, rootMetadata, "root");
+  requireStandaloneOwner(root, rootMetadata, "root", windowsAclProbeDeadline);
   const physicalRoot = realpathSync(root);
   if (physicalRoot !== root) {
     throw discoveryPublicationFailure(
@@ -673,7 +762,7 @@ function publishStandaloneClientV1DiscoveryRecord(endpoint: string): void {
   }
 
   const path = clientV1DiscoveryFile();
-  assertStandaloneDiscoveryTarget(path);
+  assertStandaloneDiscoveryTarget(path, windowsAclProbeDeadline);
   let record:
     | {
       version: 1;
@@ -744,7 +833,7 @@ function publishStandaloneClientV1DiscoveryRecord(endpoint: string): void {
     fsyncSync(fd);
     closeSync(fd);
     fd = null;
-    assertStandaloneDiscoveryTarget(path);
+    assertStandaloneDiscoveryTarget(path, windowsAclProbeDeadline);
     renameSync(temporaryPath, path);
     ownsTemporaryPath = false;
     chmodSync(path, 0o600);
