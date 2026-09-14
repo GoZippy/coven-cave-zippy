@@ -770,7 +770,7 @@ test("search drops the Awaiting you section but rows keep their visible label an
 
   const row = rowContainerFor(renderer.root, "Overdue search target");
   expect(row.props["data-attention"]).toBe("overdue-human");
-  expect(attentionCueLabels(row)).toEqual(["Still waiting"]);
+  expect(attentionCueLabels(row)).toEqual(["Awaiting you"]);
 
   const descriptionId = row.find(
     (node) => node.type === "button" && node.props.className === "cnav__thread-main focus-ring",
@@ -828,7 +828,7 @@ test("a pinned attention session appears in both Pinned and Awaiting you, keepin
   const pinnedRow = rowContainerFor(pinnedSection, railTitle);
   expect(pinnedRow.props.className.split(" ")).toEqual(expect.arrayContaining(["cnav__thread", "cnav__thread--flat", "is-active"]));
   expect(pinnedRow.props["data-attention"]).toBe("left-hanging");
-  expect(attentionCueLabels(pinnedRow)).toEqual(["Left hanging"]);
+  expect(attentionCueLabels(pinnedRow)).toEqual(["Awaiting you"]);
   expect(
     pinnedRow.findAll(
       (node) =>
@@ -851,7 +851,7 @@ test("a pinned attention session appears in both Pinned and Awaiting you, keepin
   const awaitingRow = rowContainerFor(awaitingSection, railTitle);
   expect(awaitingRow.props.className.split(" ")).toEqual(expect.arrayContaining(["cnav__thread", "cnav__thread--flat", "is-active"]));
   expect(awaitingRow.props["data-attention"]).toBe("left-hanging");
-  expect(attentionCueLabels(awaitingRow)).toEqual(["Left hanging"]);
+  expect(attentionCueLabels(awaitingRow)).toEqual(["Awaiting you"]);
   expect(
     awaitingRow.findAll(
       (node) =>
@@ -929,7 +929,7 @@ test("a failed run with a PR badge keeps its danger runtime tick alongside a sep
     (node) => typeof node.type === "string" && node.props.className === "cnav__attention-tick",
   );
   expect(attentionTicks).toHaveLength(1);
-  expect(attentionCueLabels(row)).toEqual(["Left hanging"]);
+  expect(attentionCueLabels(row)).toEqual(["Awaiting you"]);
 
   await act(async () => renderer.unmount());
 });
@@ -984,7 +984,7 @@ test("a paused run with a branch glyph keeps its runtime tick alongside a separa
     (node) => typeof node.type === "string" && node.props.className === "cnav__attention-tick",
   );
   expect(attentionTicks).toHaveLength(1);
-  expect(attentionCueLabels(row)).toEqual(["Still waiting"]);
+  expect(attentionCueLabels(row)).toEqual(["Awaiting you"]);
 
   await act(async () => renderer.unmount());
 });
