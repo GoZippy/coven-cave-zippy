@@ -14,6 +14,11 @@ requests return `503 unavailable` and upgrades are refused before dispatch.
 An unexpired legacy invite does not bypass this refusal. Initialization failure
 is logged with its cause and remains permanent for that server instance: fix the
 underlying storage or permissions problem and restart the server.
+After its first logged refusal and connection cleanup, background policy
+revalidation stops for this terminal initialization failure. Request-time
+refusals remain in force. Policy-read failures from an initialized store are
+still reported and retried, allowing recovery without treating them as legacy
+authorization.
 
 Unrelated direct-loopback application requests and upgrades remain available.
 Local device management and mobile invite issuance still require a loaded

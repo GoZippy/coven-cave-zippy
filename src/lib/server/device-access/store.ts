@@ -39,6 +39,14 @@ export class DeviceAccessError extends Error {
   }
 }
 
+/** A store that never initialized cannot recover within this server instance. */
+export class DeviceAccessInitializationError extends DeviceAccessError {
+  constructor(message: string) {
+    super("unavailable", message);
+    this.name = "DeviceAccessInitializationError";
+  }
+}
+
 export interface DeviceAccessStore {
   policy(): Promise<{ enabled: boolean; allowedTailnets: string[] }>;
   snapshot(): Promise<DeviceAccessSnapshot>;

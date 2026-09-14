@@ -24,7 +24,7 @@
  * everything down and, on the way, took device access with it anyway.
  */
 
-import { DeviceAccessError, type DeviceAccessStore } from "./store.ts";
+import { DeviceAccessInitializationError, type DeviceAccessStore } from "./store.ts";
 
 export type DeferredDeviceAccess = {
   store: DeviceAccessStore;
@@ -69,8 +69,7 @@ export function deferDeviceAccessStore(
   /** The live store, or a refusal carrying why there isn't one. */
   const live = (): DeviceAccessStore => {
     if (ready) return ready;
-    throw new DeviceAccessError(
-      "unavailable",
+    throw new DeviceAccessInitializationError(
       failed
         ? `Device access is unavailable on this host: ${failed.message}`
         : "Device access is unavailable on this host.",

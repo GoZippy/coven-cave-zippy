@@ -473,6 +473,12 @@ var DeviceAccessError = class extends Error {
     this.status = status;
   }
 };
+var DeviceAccessInitializationError = class extends DeviceAccessError {
+  constructor(message) {
+    super("unavailable", message);
+    this.name = "DeviceAccessInitializationError";
+  }
+};
 function text(value, field, max = 256) {
   if (typeof value !== "string" || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/.test(value) || value.includes(DEVICE_CREDENTIAL_PREFIX)) {
     throw new DeviceAccessError("invalid_request", `Invalid ${field}.`);
@@ -1960,6 +1966,7 @@ function createDeviceAccessGateway(options) {
       console.warn("[device-access] Policy revalidation failed:", error instanceof Error ? error.message : "unavailable");
       closeLegacy();
       for (const res of active.keys()) res.destroy();
+      if (error instanceof DeviceAccessInitializationError) clearInterval(timer);
     } finally {
       revalidating = false;
     }
@@ -2156,8 +2163,7 @@ function deferDeviceAccessStore(initialize, { warn = console.warn } = {}) {
   );
   const live = () => {
     if (ready) return ready;
-    throw new DeviceAccessError(
-      "unavailable",
+    throw new DeviceAccessInitializationError(
       failed ? `Device access is unavailable on this host: ${failed.message}` : "Device access is unavailable on this host."
     );
   };
