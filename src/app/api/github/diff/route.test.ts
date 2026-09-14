@@ -12,6 +12,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const realFetch = globalThis.fetch;
+const headSha = "a".repeat(40);
+const baseSha = "b".repeat(40);
+const mergeBaseSha = "c".repeat(40);
+const revision = { repo: "o/r", number: 7, headSha, baseSha, baseRef: "main", mergeBaseSha };
 
 /** Stand in for GitHub's pull-request files endpoint. */
 function stubGitHub(payload: unknown, init: { status?: number } = {}) {
@@ -19,7 +23,11 @@ function stubGitHub(payload: unknown, init: { status?: number } = {}) {
   globalThis.fetch = async (input: unknown) => {
     calls.push(String(input));
     const status = init.status ?? 200;
-    return new Response(JSON.stringify(payload), {
+    const data = status !== 200 || !Array.isArray(payload) || String(input).includes("/files?") ? payload
+      : String(input).endsWith("/pulls/7")
+        ? { head: { sha: headSha }, base: { sha: baseSha, ref: "main" } }
+        : { base_commit: { sha: baseSha }, merge_base_commit: { sha: mergeBaseSha }, files: payload };
+    return new Response(JSON.stringify(data), {
       status,
       headers: { "content-type": "application/json" },
     });
@@ -66,7 +74,32 @@ test("a clean pull request reports every file, untruncated", async () => {
   assert.equal(body.total, 2);
   assert.equal(body.files.length, 2);
   for (const entry of body.files) assert.equal(entry.noPatchReason, null);
-  assert.match(calls[0], /\/repos\/o\/r\/pulls\/7\/files\?per_page=100$/);
+  assert.deepEqual(body.revision, revision);
+  assert.equal(calls[1], `https://api.github.com/repos/o/r/compare/${baseSha}...${headSha}?per_page=1`);
+  assert.equal(calls.some((url) => url.includes("/files?")), false);
+});
+
+test("an author push cannot relabel the immutable patch with a newer head", async () => {
+  const calls = stubGitHub([file({ patch: "+revision A" })]);
+  const body = await (await GET(request())).json();
+  assert.equal(body.revision?.headSha, headSha);
+  assert.equal(body.files[0].patch, "+revision A");
+  assert.ok(calls[1].includes(`${baseSha}...${headSha}`));
+});
+
+test("missing or inconsistent comparison identity fails closed", async () => {
+  for (const comparison of [
+    { files: [file()] },
+    { files: [file()], base_commit: { sha: headSha }, merge_base_commit: { sha: mergeBaseSha } },
+    { files: [file()], base_commit: { sha: baseSha }, merge_base_commit: { sha: "bad" } },
+  ]) {
+    globalThis.fetch = async (input) => Response.json(String(input).endsWith("/pulls/7")
+      ? { head: { sha: headSha }, base: { sha: baseSha, ref: "main" } }
+      : comparison);
+    const response = await GET(request());
+    assert.equal(response.status, 502);
+    assert.equal((await response.json()).ok, false);
+  }
 });
 
 test("a file GitHub sends no patch for is marked as GitHub's omission, not a truncation", async () => {

@@ -160,7 +160,13 @@ test("readiness and actions fail closed without an exact GitHub state", () => {
   assert.match(surface, /readinessPhase: readiness\.phase/);
   assert.match(surface, /state: facts\?\.state/);
   assert.match(surface, /draft: facts\?\.draft/);
-  assert.match(surface, /if \(!canAct \|\| !facts\?\.headSha \|\| !selectedPullRequest \|\| busy\) return false/);
+  assert.match(surface, /if \(!canAct \|\| !source\.revision \|\| !selectedPullRequest \|\| busy\) return false/);
+  assert.match(surface, /displayedRevision: source\.revision/);
+  assert.match(surface, /currentRevision: facts/);
+  assert.equal((surface.match(/headSha: source\.revision\.headSha/g) ?? []).length, 3);
+  assert.equal((surface.match(/reviewedRevision: source\.revision/g) ?? []).length, 3);
+  assert.doesNotMatch(surface, /headSha: facts\.headSha/);
+  assert.match(surface, /key=\{`\$\{selectedScope\}:\$\{workItem\?\.revision \?\? "loading"\}`\}/);
   assert.match(verdict, /Actions are held until the pull request's state loads/);
 });
 

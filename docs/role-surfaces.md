@@ -251,7 +251,7 @@ never fake production data.
 
   A file rail replaces the file column: chips window around the open file, the
   Files opens the full navigator (search, tree, keyboard traversal),
-  and the reviewed-file progress persists against the exact PR head SHA (or an
+  and the reviewed-file progress persists against the displayed PR base/head revision (or an
   honest local working-tree revision), resetting when that identity changes.
   Same-item refresh retains the open file when it still exists. Reading options
   expose whitespace filtering, context and persisted long-line wrapping.
@@ -272,8 +272,18 @@ never fake production data.
   PR sessions always read GitHub; only sessions without a linked PR read the
   local working tree. Unknown readiness stays non-actionable, and approve /
   request-changes / squash-merge continue to dispatch through the real GitHub
-  routes. Verdicts carry the reviewed head SHA: reviews use GitHub's
-  `commit_id`, and merges use its atomic `sha` guard. Failed submissions stay
+  routes. PR diffs use GitHub's immutable `baseSha...headSha` comparison,
+  retaining the merge-base SHA for the PR's three-dot patch semantics.
+  Verdicts require the displayed repository, PR number, base ref, base SHA and
+  head SHA to match readiness. Missing identity, a stale diff or an in-flight
+  read holds actions with an explicit error/loading state; refresh reads both
+  again. Review progress and confirmation dialogs are scoped to that displayed
+  revision, not independently fetched readiness.
+  Verdict requests carry the displayed revision; the server correlates it with
+  a fresh PR read before dispatch. Reviews use GitHub's `commit_id`, and merges
+  retain its atomic head `sha` guard. GitHub provides no atomic base-SHA merge
+  precondition, so the base check is a pre-dispatch check, not a transaction.
+  Failed submissions stay
   visible inside the composer without discarding the note. The deck never edits
   the working tree.
   Missing or capped review evidence also blocks verdicts: the comments route

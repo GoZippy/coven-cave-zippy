@@ -29,6 +29,7 @@ import { parseReviewItem, readReviewJson } from "./review-github-read.ts";
 import { parseReadinessChecks, parseReadinessComments, usePrReadiness, type PrReadiness } from "./use-pr-readiness.ts";
 import { useReviewDeckModel, type ReviewDeckModel } from "./use-review-deck-model.ts";
 import { useReviewSource, type ReviewSource } from "./use-review-source.ts";
+import { reviewActionsAvailable } from "./review-workbench-model.ts";
 import type { ReviewSourceFilter } from "./review-queue";
 
 const { act, create }: {
@@ -47,6 +48,7 @@ function facts(overrides: Partial<PrFacts> = {}): PrFacts {
     headRef: "feat/x",
     baseRef: "main",
     headSha: "abcdef1234".repeat(4),
+    baseSha: "b".repeat(40),
     commits: 2,
     additions: 10,
     deletions: 3,
@@ -91,6 +93,78 @@ function itemWire() {
 
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+test("production source A plus readiness B cannot enable a verdict; matching revisions can", async (t) => {
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { value: true, configurable: true });
+  t.after(() => { Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"); });
+  const revision = {
+    repo: "o/r", number: 7, headSha: facts().headSha,
+    baseSha: "b".repeat(40), baseRef: "main", mergeBaseSha: "c".repeat(40),
+  };
+  const newer = { ...facts(), headSha: "d".repeat(40) };
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("/item?")) return Response.json({ ...itemWire(), pull: newer });
+    if (url.includes("/checks?")) return Response.json({ ok: true, sha: newer.headSha, runs: [], statuses: [] });
+    if (url.includes("/comments?")) return Response.json({ ok: true, reviewEvidenceComplete: true, reviews: [], reviewThreads: [] });
+    return Response.json({ ok: true, revision, files: [{ filename: "a.ts", patch: "+revision A" }] });
+  });
+  let source!: ReviewSource;
+  let readiness!: PrReadiness;
+  function Probe() {
+    source = useReviewSource({ pr: { repo: "o/r", number: 7 }, projectRoot: null, scope: "session" });
+    readiness = usePrReadiness({ repo: "o/r", number: 7 });
+    return null;
+  }
+  let root!: ReturnType<typeof create>;
+  try {
+    await act(async () => { root = create(createElement(Probe)); });
+    assert.equal(source.openPatch.text, "+revision A");
+    const input = {
+      sourceKind: source.kind, sourcePhase: source.phase,
+      displayedRevision: source.revision,
+      currentRevision: readiness.facts,
+      readinessPhase: readiness.phase, state: readiness.facts?.state, draft: readiness.facts?.draft,
+    };
+    assert.equal(reviewActionsAvailable(input), false, "diff A / facts B must not enable approval");
+    assert.equal(reviewActionsAvailable({ ...input, currentRevision: revision }), true);
+    for (const currentRevision of [
+      { ...revision, baseSha: "e".repeat(40) },
+      { ...revision, baseRef: "release" },
+      { ...revision, repo: "other/repo" },
+      { ...revision, number: 8 },
+      null,
+    ]) assert.equal(reviewActionsAvailable({ ...input, currentRevision }), false);
+    assert.equal(reviewActionsAvailable({ ...input, currentRevision: revision, sourcePhase: "loading" }), false);
+    assert.equal(reviewActionsAvailable({ ...input, currentRevision: revision, displayedRevision: null }), false);
+  } finally {
+    if (root) await act(async () => { root.unmount(); });
+  }
+});
+
+test("unidentified diffs and wrong-PR responses are errors, never actionable sources", async (t) => {
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { value: true, configurable: true });
+  t.after(() => { Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"); });
+  let revision: unknown;
+  t.mock.method(globalThis, "fetch", async () => Response.json({ ok: true, revision, files: [] }));
+  let source!: ReviewSource;
+  function Probe() {
+    source = useReviewSource({ pr: { repo: "o/r", number: 7 }, projectRoot: null, scope: "session" });
+    return null;
+  }
+  let root!: ReturnType<typeof create>;
+  try {
+    await act(async () => { root = create(createElement(Probe)); });
+    assert.equal(source.phase, "error");
+    assert.match(source.error!, /revision/i);
+    revision = { repo: "o/r", number: 8, headSha: facts().headSha, baseSha: "b".repeat(40), baseRef: "main", mergeBaseSha: "c".repeat(40) };
+    await act(async () => { source.retry(); });
+    assert.equal(source.phase, "error");
+    assert.equal(source.revision, null);
+  } finally {
+    if (root) await act(async () => { root.unmount(); });
+  }
+});
+
 test("a retained source retry refreshes the current selection after a late mutation", async (t) => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { value: true, configurable: true });
   t.after(() => { Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"); });
@@ -98,11 +172,15 @@ test("a retained source retry refreshes the current selection after a late mutat
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
     const number = new URL(String(input), "http://localhost").searchParams.get("number")!;
     reads.push(number);
-    return Response.json({ ok: true, total: 1, files: [{
+    return Response.json({ ok: true, total: 1, revision: {
+      repo: "o/r", number: Number(number), headSha: facts().headSha,
+      baseSha: facts().baseSha, baseRef: "main", mergeBaseSha: "c".repeat(40),
+    }, files: [{
       filename: `${number}.ts`, status: "modified", additions: 1, deletions: 0,
       patch: "@@ -0,0 +1 @@\n+export const ready = true;",
     }] });
   });
+
   let source!: ReviewSource;
   function Probe({ number }: { number: number }) {
     source = useReviewSource({ pr: { repo: "o/r", number }, projectRoot: null, scope: `session-${number}` });
@@ -122,6 +200,46 @@ test("a retained source retry refreshes the current selection after a late mutat
   } finally {
     if (root) await act(async () => { root.unmount(); });
   }
+});
+
+test("PR changes within one session mask ready data before effects and discard late reads", async (t) => {
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { value: true, configurable: true });
+    t.after(() => { Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"); });
+    const pending: Array<{ number: number; resolve: (value: Response) => void }> = [];
+    t.mock.method(globalThis, "fetch", (input: string | URL | Request) => new Promise<Response>((resolve) => {
+      pending.push({ number: Number(new URL(String(input), "http://localhost").searchParams.get("number")), resolve });
+    }));
+    let source!: ReviewSource;
+    const renders: Array<{ number: number; phase: string; files: number; revision: unknown }> = [];
+    function Probe({ number }: { number: number }) {
+      source = useReviewSource({ pr: { repo: "o/r", number }, projectRoot: null, scope: "same-session" });
+      renders.push({ number, phase: source.phase, files: source.files.length, revision: source.revision });
+      return null;
+    }
+    const response = (number: number, headSha = facts().headSha) => Response.json({
+      ok: true, revision: { repo: "o/r", number, headSha, baseSha: facts().baseSha, baseRef: "main", mergeBaseSha: "c".repeat(40) },
+      files: [{ filename: `${number}.ts`, patch: `+PR ${number}` }],
+    });
+    let root!: ReturnType<typeof create>;
+    try {
+      await act(async () => { root = create(createElement(Probe, { number: 7 })); });
+      await act(async () => { pending[0].resolve(response(7)); });
+      assert.equal(source.phase, "ready");
+      await act(async () => { root.update(createElement(Probe, { number: 8 })); });
+      const first = renders.find((render) => render.number === 8)!;
+      assert.deepEqual(first, { number: 8, phase: "loading", files: 0, revision: null });
+      await act(async () => { root.update(createElement(Probe, { number: 9 })); });
+      await act(async () => { pending[2].resolve(response(9)); });
+      await act(async () => { pending[1].resolve(response(8, "d".repeat(40))); });
+      assert.equal(source.revision?.number, 9);
+      assert.equal(source.openPatch.text, "+PR 9");
+      await act(async () => { source.retry(); source.retry(); });
+      await act(async () => { pending[4].resolve(response(9, "e".repeat(40))); });
+      await act(async () => { pending[3].resolve(response(9, "f".repeat(40))); });
+      assert.equal(source.revision?.headSha, "e".repeat(40), "older refresh must not overwrite the displayed revision");
+    } finally {
+      if (root) await act(async () => { root.unmount(); });
+    }
 });
 
 test("279 clean branch sessions never inflate the actionable queue; browsing preserves them", () => {
