@@ -470,7 +470,7 @@ test("the real probe restricts and verifies a real path on Windows", async (t: T
   }
 });
 
-test("the real Windows probe preserves a read-only OWNER RIGHTS boundary", async (
+test("the real Windows probe preserves read-only OWNER RIGHTS while removing unsafe grants", async (
   t: TestContext,
 ) => {
   if (process.platform !== "win32") {
@@ -519,6 +519,9 @@ $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRul
   $me, 'FullControl', $inheritance, 'InheritOnly', 'Allow')))
 $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
   $ownerRights, 'ReadPermissions', $inheritance, 'None', 'Allow')))
+$users = New-Object System.Security.Principal.SecurityIdentifier('${USERS_SID}')
+$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+  $users, 'Write', $inheritance, 'None', 'Allow')))
 $item.SetAccessControl($acl)
 `,
       ],
@@ -539,7 +542,16 @@ $item.SetAccessControl($acl)
     );
 
     const observed = await probeWindowsAcl(root);
-    assert.equal(observed.repaired, false, "the stricter supervisor DACL must not be rewritten");
+    assert.equal(observed.repaired, true, "the unsafe Users grant must trigger ACL repair");
+    assert.ok(
+      observed.removed.includes(USERS_SID),
+      "the unsafe Users grant must be reported as removed",
+    );
+    assert.equal(
+      observed.aces.some((ace) => ace.sid === USERS_SID),
+      false,
+      "the unsafe Users grant must be absent after repair",
+    );
     assert.ok(
       observed.aces.some((ace) =>
         ace.sid === OWNER_RIGHTS_SID
@@ -983,6 +995,11 @@ test("the ACL probe reads access rules as SIDs without account translation", asy
       script![1],
       /\$acl\.Access\b/u,
       `${file} must not enumerate the account-translating Access property`,
+    );
+    assert.match(
+      script![1],
+      /\$rule\.IdentityReference\.Value -eq \$ownerRights\.Value[\s\S]*?\$rule\.FileSystemRights -band \$writableRights\) -eq 0[\s\S]*?continue/u,
+      `${file} must preserve a read-only OWNER RIGHTS rule while removing unsafe rules`,
     );
   }
 });

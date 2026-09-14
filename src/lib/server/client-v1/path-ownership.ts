@@ -295,7 +295,14 @@ if (-not (Test-Exclusive $state)) {
     $false,
     [System.Security.Principal.SecurityIdentifier]
   ))) {
-    $acl.RemoveAccessRuleSpecific($rule)
+    if (
+      $rule.IdentityReference.Value -eq $ownerRights.Value -and
+      [string]$rule.AccessControlType -eq 'Allow' -and
+      (([uint32]$rule.FileSystemRights -band $writableRights) -eq 0)
+    ) {
+      continue
+    }
+    [void]$acl.RemoveAccessRuleSpecific($rule)
   }
   $inheritance = if ($item.PSIsContainer) { 'ContainerInherit, ObjectInherit' } else { 'None' }
   foreach ($sid in @($me, $system, $admins)) {

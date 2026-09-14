@@ -773,6 +773,8 @@ async function standalonePublisher(overrides: Record<string, unknown> = {}) {
     WINDOWS_ACL_PUBLICATION_BUDGET_MS: 24_000,
     WINDOWS_SYSTEM_SID: "system",
     WINDOWS_ADMINISTRATORS_SID: "admins",
+    WINDOWS_OWNER_RIGHTS_SID: "owner-rights",
+    WINDOWS_WRITABLE_RIGHTS_MASK: 0x500d_0156,
     UNVERIFIED_OWNERSHIP_ENV: "COVEN_CAVE_ALLOW_UNVERIFIED_CLIENT_V1_OWNERSHIP",
     UNVERIFIED_OWNERSHIP_TOKEN: "test-waiver-token",
     UNVERIFIED_OWNERSHIP_REASON_ENV: "COVEN_CAVE_UNVERIFIED_CLIENT_V1_OWNERSHIP_REASON",
@@ -784,6 +786,45 @@ async function standalonePublisher(overrides: Record<string, unknown> = {}) {
   };
   return { ...runtime, messages, writes, root, target };
 }
+
+test("standalone Windows discovery enforces OWNER RIGHTS access masks", async () => {
+  const report = (rights: number) => JSON.stringify({
+    self: "self",
+    owner: "self",
+    protected: true,
+    repaired: false,
+    removed: [],
+    aces: [
+      { sid: "self", type: "Allow", rights: 0x001f_01ff },
+      { sid: "system", type: "Allow", rights: 0x001f_01ff },
+      { sid: "admins", type: "Allow", rights: 0x001f_01ff },
+      { sid: "owner-rights", type: "Allow", rights },
+    ],
+  });
+  const process = {
+    pid: 4310,
+    platform: "win32",
+    env: { SystemRoot: "C:\\Windows" },
+  };
+
+  const readOnly = await standalonePublisher({
+    process,
+    execFileSync: () => report(0x0002_0000),
+  });
+  readOnly.publish("http://127.0.0.1:4310");
+  assert.equal(readOnly.published(), true);
+
+  const writable = await standalonePublisher({
+    process,
+    execFileSync: () => report(0x0004_0000),
+  });
+  assert.throws(
+    () => writable.publish("http://127.0.0.1:4310"),
+    /private path, ACL and principal/,
+  );
+  assert.equal(writable.published(), false);
+  assert.deepEqual(writable.writes, []);
+});
 
 test("standalone publication reports fixed refusal categories without raw cause leakage", async () => {
   const root = resolve("private-discovery-root");
