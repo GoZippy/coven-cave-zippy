@@ -377,7 +377,15 @@ function sharedOwnershipRefusal(
 const WINDOWS_ACL_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine('acl-probe:start')
-$item = Get-Item -LiteralPath $env:COVEN_CAVE_CLIENT_V1_ACL_PATH -Force
+$path = $env:COVEN_CAVE_CLIENT_V1_ACL_PATH
+$isDirectory = [System.IO.Directory]::Exists($path)
+if ($isDirectory) {
+  $item = [System.IO.DirectoryInfo]::new($path)
+} elseif ([System.IO.File]::Exists($path)) {
+  $item = [System.IO.FileInfo]::new($path)
+} else {
+  throw 'ACL path does not exist.'
+}
 [Console]::Error.WriteLine('acl-probe:item')
 $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = New-Object System.Security.Principal.SecurityIdentifier('${WINDOWS_SYSTEM_SID}')
@@ -459,7 +467,7 @@ if (-not (Test-Exclusive $state)) {
     }
     [void]$acl.RemoveAccessRuleSpecific($rule)
   }
-  $inheritance = if ($item.PSIsContainer) { 'ContainerInherit, ObjectInherit' } else { 'None' }
+  $inheritance = if ($isDirectory) { 'ContainerInherit, ObjectInherit' } else { 'None' }
   foreach ($sid in @($me, $system, $admins)) {
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
       $sid, 'FullControl', $inheritance, 'None', 'Allow')))
