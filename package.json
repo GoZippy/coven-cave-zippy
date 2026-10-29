@@ -140,7 +140,7 @@
     "@xterm/xterm": "6.0.0",
     "canonicalize": "3.0.0",
     "mermaid": "11.16.1",
-    "next": "16.3.3",
+    "next": "16.4.1",
     "node-pty": "1.1.0",
     "pdfjs-dist": "6.2.108",
     "punycode": "2.3.1",
@@ -149,7 +149,7 @@
     "react-colorful": "5.8.0",
     "react-dom": "19.2.8",
     "react-resizable-panels": "4.12.2",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "shiki": "4.3.1",
     "sucrase": "3.35.1",
     "twitter-text": "3.1.0",
@@ -186,7 +186,7 @@
       "enhanced-resolve": "5.23.0",
       "nanoid@3": "3.3.18",
       "postcss@<8.5.23": "^8.5.26",
-      "sharp": "0.35.4"
+      "sharp": "0.35.5"
     },
     "supportedArchitectures": {
       "os": [
